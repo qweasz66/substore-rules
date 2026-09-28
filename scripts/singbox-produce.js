@@ -1,5 +1,5 @@
 /**
- * Sub-Store 原生直调版 Sing-box 产出脚本
+ * 适配 Sub-Store 官方内核规范的 Sing-box 产出脚本
  * 仓库: https://github.com/qweasz66/substore-rules
  */
 
@@ -22,44 +22,31 @@ function isServerIPv6(server) {
   return (clean.match(/:/g) || []).length >= 2;
 }
 
-// 统一提取转换为合法的 sing-box 节点对象
-function toSingboxNode(p) {
-  if (!p) return null;
-  // 提取原始节点
-  let node = p._node || p.node || p;
-  let res = { ...node };
-
-  res.tag = (res.tag || res.name || p.name || p.tag || "Proxy").trim();
-  
-  // 清除内部冗余属性
-  delete res._node;
-  delete res.subName;
-  delete res.collectionName;
-  
-  return res;
-}
-
 async function produce(proxies) {
-  const args = typeof $arguments !== "undefined" ? $arguments : {};
-  let targetNodes = [];
-
-  // 1. 多途径获取节点列表
-  if (Array.isArray(proxies) && proxies.length > 0) {
-    targetNodes = proxies;
-  } else if (proxies && Array.isArray(proxies.proxies) && proxies.proxies.length > 0) {
-    targetNodes = proxies.proxies;
-  } else if (typeof getProxies === "function") {
-    // 调用 Sub-Store 内置全局方法拉取
-    const name = args.name || "singbox";
-    const type = (args.type === "单订阅" || args.type === "订阅") ? "sub" : "collection";
-    try {
-      targetNodes = await getProxies({ name, type });
-    } catch (e) {
-      // 容错
-    }
+  // 1. 获取传入的节点
+  const inputList = Array.isArray(proxies) ? proxies : (proxies && proxies.proxies) ? proxies.proxies : [];
+  
+  if (inputList.length === 0) {
+    throw new Error("[Sing-Box Produce] Sub-Store 未获取到任何上游节点，请检查组合订阅是否包含有效节点！");
   }
 
-  // 2. 拉取远程模板
+  // 2. 关键核心：调用 Sub-Store 内置编译引擎，将通用节点编译为合法 sing-box 出站结构
+  let singboxNodes = [];
+  try {
+    if (typeof ProxyUtils !== "undefined" && typeof ProxyUtils.produce === "function") {
+      const produced = ProxyUtils.produce(inputList, "Sing-Box");
+      singboxNodes = Array.isArray(produced) ? produced : (produced.outbounds || []);
+    }
+  } catch (e) {
+    // 降级处理
+  }
+
+  // 降级兼容：如果环境未暴露 ProxyUtils，直接使用节点原数据
+  if (!singboxNodes || singboxNodes.length === 0) {
+    singboxNodes = inputList.map(p => p._node || p.node || p);
+  }
+
+  // 3. 拉取你的远程模板
   const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json";
   let templateText = "";
   try {
@@ -74,36 +61,34 @@ async function produce(proxies) {
 
   const config = JSON.parse(templateText);
 
-  // 3. 清洗节点并确保 Tag 唯一
+  // 4. 清洗节点并打上唯一 Tag
   const validNodes = [];
   const validNodeTags = [];
   const seenTags = {};
 
-  for (const item of targetNodes) {
-    const node = toSingboxNode(item);
-    if (!node || !node.tag) continue;
+  for (const node of singboxNodes) {
+    if (!node) continue;
+    let baseTag = (node.tag || node.name || "Proxy").trim();
 
-    // 剔除广告/提示节点
-    if (FILTER_OUT_PATTERN.test(node.tag)) {
+    // 过滤广告/提示节点
+    if (FILTER_OUT_PATTERN.test(baseTag)) {
       continue;
     }
 
-    let baseTag = node.tag;
     let count = seenTags[baseTag] || 0;
     seenTags[baseTag] = count + 1;
     let uniqueTag = count === 0 ? baseTag : `${baseTag} (${count})`;
 
-    node.tag = uniqueTag;
-    validNodes.push(node);
+    const cleanNode = { ...node, tag: uniqueTag };
+    delete cleanNode._node;
+    delete cleanNode.subName;
+    delete cleanNode.collectionName;
+
+    validNodes.push(cleanNode);
     validNodeTags.push(uniqueTag);
   }
 
-  // 如果依然没有任何节点，抛出明确错误便于定位
-  if (validNodes.length === 0) {
-    throw new Error(`未读取到有效节点！Sub-Store 传入数量: ${targetNodes.length}。请确认组合订阅【${args.name || "singbox"}】内有可用节点。`);
-  }
-
-  // 4. 地区与 IPv6 分流提取
+  // 5. 地区与 IPv6 分类
   const regionTags = {};
   for (const reg in REGION_RULES) {
     regionTags[reg] = [];
@@ -125,7 +110,7 @@ async function produce(proxies) {
     }
   }
 
-  // 5. 组合 outbounds 结构
+  // 6. 策略组映射
   const baseOutbounds = [];
   const groupOutbounds = [];
 
@@ -137,13 +122,14 @@ async function produce(proxies) {
     }
   }
 
+  // 将转换编译完成的节点追加进 outbounds
   const newOutbounds = [...baseOutbounds, ...validNodes];
 
   for (const g of groupOutbounds) {
     const tagName = g.tag || "";
 
     if (g.type === "urltest") {
-      g.outbounds = validNodeTags;
+      g.outbounds = validNodeTags.length > 0 ? validNodeTags : ["DIRECT"];
     } else if (regionTags[tagName]) {
       const matched = regionTags[tagName];
       g.outbounds = matched.length > 0 ? matched : ["DIRECT"];

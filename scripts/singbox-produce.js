@@ -1,31 +1,18 @@
 /**
- * Sub-Store 原生标准 Sing-box 产出脚本
+ * Sub-Store 原生通用 Sing-box 产出脚本 (强制注入版)
  * 仓库: https://github.com/qweasz66/substore-rules
  */
 
-// 垃圾/提示/广告节点过滤正则
 const FILTER_OUT_PATTERN = /官网|剩余|流量|套餐|免费|订阅|到期时间|直连|GB|Expire|Traffic|重置日|群组|发布页|防失联/i;
-
-// IPv6 识别逻辑（名称识别 + 底层地址/域名识别）
-const IPV6_NAME_REGEX = /(?:ipv6|\bv6\b|6g|\[v6\])/i;
+const IPV6_PATTERN = /(?:ipv6|\bv6\b|6g|\[v6\])/i;
 
 function isIPv6Server(server) {
   if (!server) return false;
   const cleanServer = String(server).trim().replace(/^\[\vert{}\]$/g, "");
-  const colonCount = (cleanServer.match(/:/g) || []).length;
-  if (colonCount >= 2) return true;
-  if (/(?:^|\.)v6[.-]|ipv6[.-]/i.test(cleanServer)) return true;
-  return false;
+  return (cleanServer.match(/:/g) || []).length >= 2 || /(?:^|\.)v6[.-]|ipv6[.-]/i.test(cleanServer);
 }
 
-function isNodeIPv6(node) {
-  if (!node) return false;
-  const tag = node.tag || node.name || "";
-  const server = node.server || node.host || "";
-  return IPV6_NAME_REGEX.test(tag) || isIPv6Server(server);
-}
-
-// 解析七尺宇/xream 风格的 outbound 参数
+// 解析七尺宇/xream 的 outbound 参数
 function parseOutboundArgs(rawStr) {
   if (!rawStr) return [];
   const rules = [];
@@ -48,99 +35,109 @@ function parseOutboundArgs(rawStr) {
   return rules;
 }
 
-function cleanNode(node) {
-  if (!node) return null;
-  const res = { ...node };
-  delete res._node;
-  delete res.subName;
-  delete res.collectionName;
-  return res;
+// 彻底还原与清洗节点
+function formatSingboxNode(p) {
+  if (!p) return null;
+  // Sub-Store 节点可能嵌套在 _node 或 node 中
+  let n = p._node ? { ...p._node } : (p.node ? { ...p.node } : { ...p });
+  
+  // 必须保证 tag
+  let tag = (n.tag || n.name || p.name || p.tag || "").trim();
+  if (!tag) return null;
+  n.tag = tag;
+
+  // 清除 Sub-Store 私有字段
+  delete n._node;
+  delete n.node;
+  delete n.subName;
+  delete n.collectionName;
+  delete n._sub;
+  return n;
 }
 
 async function produce(proxies) {
   const args = typeof $arguments !== "undefined" ? $arguments : {};
-
-  // 1. 获取源节点列表（兼容入参与全局 API 拉取）
   let rawList = [];
+
+  // 1. 尝试从入参获取
   if (Array.isArray(proxies) && proxies.length > 0) {
     rawList = proxies;
-  } else if (proxies && Array.isArray(proxies.proxies)) {
+  } else if (proxies && Array.isArray(proxies.proxies) && proxies.proxies.length > 0) {
     rawList = proxies.proxies;
-  } else if (args.name && typeof getProxies === "function") {
-    const targetType = (args.type === "单订阅" || args.type === "订阅") ? "sub" : "collection";
-    try {
-      rawList = await getProxies({ name: args.name, type: targetType });
-    } catch (e) {}
   }
 
-  if (!rawList || rawList.length === 0) {
-    throw new Error(`[Sing-Box Produce] 未获取到有效节点，请确认组合订阅【${args.name || "未指定"}】存在且有节点！`);
-  }
-
-  // 2. 调用 Sub-Store 官方引擎将通用代理编译为标准 Sing-box 节点
-  let convertedNodes = [];
-  try {
-    if (typeof ProxyUtils !== "undefined" && typeof ProxyUtils.produce === "function") {
-      const res = ProxyUtils.produce(rawList, "Sing-Box");
-      convertedNodes = Array.isArray(res) ? res : (res.outbounds || []);
+  // 2. 关键修复：如果入参为空，强制通过 Sub-Store API 主动拉取订阅
+  if (rawList.length === 0) {
+    const subName = args.name || "singbox";
+    const isSub = (args.type === "单订阅" || args.type === "订阅");
+    
+    // 优先调用全局 getProxies
+    if (typeof getProxies === "function") {
+      try {
+        rawList = await getProxies({ name: subName, type: isSub ? "sub" : "collection" });
+      } catch (e) {}
     }
-  } catch (e) {}
-
-  if (!convertedNodes || convertedNodes.length === 0) {
-    convertedNodes = rawList.map(p => p._node || p.node || p);
+    
+    // 兜底调用 $substore API
+    if ((!rawList || rawList.length === 0) && typeof $substore !== "undefined") {
+      try {
+        if (isSub && $substore.getSub) {
+          const sub = await $substore.getSub(subName);
+          rawList = sub ? (sub.proxies || []) : [];
+        } else if ($substore.getCollection) {
+          const col = await $substore.getCollection(subName);
+          rawList = col ? (col.proxies || []) : [];
+        }
+      } catch (e) {}
+    }
   }
 
-  // 3. 拉取远程模板
+  // 如果依然取不到节点，直接在输出里报错，避免只输出空模板
+  if (!rawList || rawList.length === 0) {
+    throw new Error(`[Sing-Box Produce] 找不到订阅【${args.name || "singbox"}】或该订阅内节点数为 0！请先确认 Sub-Store 后台该订阅有节点。`);
+  }
+
+  // 3. 拉取模板
   const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json";
-  let templateText = "";
-  try {
-    const resp = await $http.get({
-      url: TEMPLATE_URL,
-      headers: { "User-Agent": "Sub-Store" }
-    });
-    templateText = resp.body;
-  } catch (err) {
-    throw new Error(`[Sing-Box Produce] 获取远程模板失败: ${err.message || err}`);
-  }
+  const resp = await $http.get({ url: TEMPLATE_URL, headers: { "User-Agent": "Sub-Store" } });
+  const config = JSON.parse(resp.body);
 
-  const config = JSON.parse(templateText);
-
-  // 4. 清洗节点并打上唯一 Tag
+  // 4. 清洗与去重节点
   const validNodes = [];
   const validTags = [];
   const seen = {};
 
-  for (const item of convertedNodes) {
-    if (!item) continue;
-    let baseTag = (item.tag || item.name || "Proxy").trim();
+  for (const item of rawList) {
+    const node = formatSingboxNode(item);
+    if (!node) continue;
 
-    // 过滤提示/广告节点
-    if (FILTER_OUT_PATTERN.test(baseTag)) {
+    // 过滤无用节点
+    if (FILTER_OUT_PATTERN.test(node.tag)) {
       continue;
     }
 
+    let baseTag = node.tag;
     let count = seen[baseTag] || 0;
     seen[baseTag] = count + 1;
     let uniqueTag = count === 0 ? baseTag : `${baseTag} (${count})`;
 
-    const node = cleanNode(item);
     node.tag = uniqueTag;
-
     validNodes.push(node);
     validTags.push(uniqueTag);
   }
 
-  // 兜底防空
-  if (validNodes.length === 0 && convertedNodes.length > 0) {
-    for (let i = 0; i < convertedNodes.length; i++) {
-      const node = cleanNode(convertedNodes[i]);
-      node.tag = (node.tag || `Node-${i + 1}`).trim();
-      validNodes.push(node);
-      validTags.push(node.tag);
+  // 如果全部被过滤了，恢复原始节点
+  if (validNodes.length === 0) {
+    for (const item of rawList) {
+      const node = formatSingboxNode(item);
+      if (node) {
+        validNodes.push(node);
+        validTags.push(node.tag);
+      }
     }
   }
 
-  // 5. 正则分类与 IPv6 收集
+  // 5. 正则分类与 IPv6
   const rules = parseOutboundArgs(args.outbound);
   const matchedGroups = {};
   for (const r of rules) {
@@ -149,19 +146,19 @@ async function produce(proxies) {
   const ipv6Tags = [];
 
   for (const node of validNodes) {
-    // 匹配 URL 传过来的正则
     for (const r of rules) {
       if (r.pattern && r.pattern.test(node.tag)) {
         matchedGroups[r.tag].push(node.tag);
       }
     }
-    // 判定 IPv6 节点
-    if (isNodeIPv6(node)) {
+
+    const srv = node.server || node.host || "";
+    if (IPV6_PATTERN.test(node.tag) || isIPv6Server(srv)) {
       ipv6Tags.push(node.tag);
     }
   }
 
-  // 6. 策略组重装与节点物理追加
+  // 6. 重装策略组并追加实体节点
   const baseOutbounds = [];
   const groupOutbounds = [];
 
@@ -173,25 +170,22 @@ async function produce(proxies) {
     }
   }
 
-  const finalOutbounds = [...baseOutbounds, ...validNodes];
-
   for (const g of groupOutbounds) {
     const tagName = g.tag || "";
 
     if (matchedGroups[tagName] && matchedGroups[tagName].length > 0) {
       g.outbounds = matchedGroups[tagName];
     } else if (tagName === "🌐 IPv6 节点") {
-      g.outbounds = ipv6Tags.length > 0 ? ipv6Tags : ["♻️ 自动选择", "DIRECT"];
+      g.outbounds = ipv6Tags.length > 0 ? ipv6Tags : ["DIRECT"];
     } else if (tagName === "♻️ 自动选择" || g.type === "urltest") {
-      g.outbounds = validTags.length > 0 ? validTags : ["DIRECT"];
+      g.outbounds = validTags;
     } else if (["🚀 手动切换", "全局代理"].includes(tagName)) {
-      const staticItems = (g.outbounds || []).filter(t => ["♻️ 自动选择", "DIRECT", "REJECT"].includes(t));
-      g.outbounds = [...staticItems, ...validTags];
+      g.outbounds = validTags;
     }
-
-    finalOutbounds.push(g);
   }
 
-  config.outbounds = finalOutbounds;
+  // 核心：把实体节点放在 baseOutbounds 和策略组的后面，合并导出
+  config.outbounds = [...baseOutbounds, ...groupOutbounds, ...validNodes];
+
   return JSON.stringify(config, null, 2);
 }

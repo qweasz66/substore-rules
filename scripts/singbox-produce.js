@@ -1,6 +1,6 @@
 /**
- * Sub-Store 专属 Sing-box 远程模板注入脚本
- * 支持：地区识别 / 真实 IPv6 匹配 / 自动去重 / TikTok 纯分组选择
+ * Sub-Store 产出为 Sing-box 完整配置脚本
+ * 仓库: https://github.com/qweasz66/substore-rules
  */
 
 // 1. 地区正则映射表
@@ -17,14 +17,14 @@ const IPV6_PATTERN = /ipv6|\bv6\b/i;
 
 function isServerIPv6(server) {
   if (!server) return false;
-  const clean = server.trim().replace(/^\[\vert{}\]$/g, "");
-  // 两个或以上冒号即为 IPv6 字面量
+  const clean = String(server).trim().replace(/^\[\vert{}\]$/g, "");
+  // 两个或以上冒号即为 IPv6 字面量地址
   return (clean.match(/:/g) || []).length >= 2;
 }
 
 async function produce(proxies) {
-  // 💡 请替换为你新仓库的实际地址（加上 gh-proxy 镜像保证国内拉取顺畅）
-  const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/templates/template-acl.json";
+  // 精确指向你的真实模板路径（带镜像加速）
+  const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json";
 
   let templateText = "";
   try {
@@ -39,7 +39,7 @@ async function produce(proxies) {
 
   const config = JSON.parse(templateText);
 
-  // 节点重命名与去重防冲突
+  // 2. 节点重命名与去重防冲突
   const parsedNodes = [];
   const nodeTags = [];
   const seenTags = {};
@@ -62,7 +62,7 @@ async function produce(proxies) {
     throw new Error("Sub-Store 未提供任何有效节点！");
   }
 
-  // 整理地区与 IPv6 节点
+  // 3. 整理地区与 IPv6 节点
   const regionTags = {};
   for (const reg in REGION_RULES) {
     regionTags[reg] = [];
@@ -84,7 +84,7 @@ async function produce(proxies) {
     }
   }
 
-  // 策略组分离与重组
+  // 4. 策略组分离与重组
   const baseOutbounds = [];
   const groupOutbounds = [];
 
@@ -102,25 +102,25 @@ async function produce(proxies) {
   for (const g of groupOutbounds) {
     const tagName = g.tag || "";
 
-    // 1. 自动测速组：塞入全部节点
+    // 自动测速组：塞入全部节点
     if (g.type === "urltest") {
       g.outbounds = nodeTags;
     }
-    // 2. 地区分组：塞入匹配节点（无则 DIRECT 兜底）
+    // 地区专用组：塞入对应地区节点（无则 DIRECT 兜底）
     else if (regionTags[tagName]) {
       const matched = regionTags[tagName];
       g.outbounds = matched.length > 0 ? matched : ["DIRECT"];
     }
-    // 3. IPv6 策略组：注入 v6 节点；若无则平滑兜底，杜绝闭环死锁
+    // 🌐 IPv6 节点策略组：注入识别到的 v6 节点；若无则平滑回退，杜绝循环依赖
     else if (tagName === "🌐 IPv6 节点") {
       g.outbounds = ipv6Tags.length > 0 ? ipv6Tags : ["♻️ 自动选择", "DIRECT"];
     }
-    // 4. 手动切换 / 全局代理：塞入所有单节点供手选
+    // 手动切换 / 全局代理：塞入所有单节点供手选手切
     else if (targetSelectorTags.includes(tagName)) {
       const staticItems = (g.outbounds || []).filter(t => ["♻️ 自动选择", "DIRECT", "REJECT"].includes(t));
       g.outbounds = [...staticItems, ...nodeTags];
     }
-    // 5. 其余业务组（🎵 TikTok、📹 油管视频、💬 Ai平台等）：直接保留模板中的纯分组层级
+    // 其余业务组（🎵 TikTok、📹 油管视频、💬 Ai平台等）：直接保留模板中的纯分组层级
     newOutbounds.push(g);
   }
 

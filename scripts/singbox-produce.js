@@ -1,6 +1,6 @@
 /**
+ * Sub-Store 原生绝对兼容产出脚本
  * 仓库: https://github.com/qweasz66/substore-rules
- * 完美对齐七尺宇/xream 沙盒机制
  */
 
 const FILTER_OUT_PATTERN = /官网|剩余|流量|套餐|免费|订阅|到期时间|直连|GB|Expire|Traffic|重置日|群组|发布页|防失联/i;
@@ -45,26 +45,42 @@ function cleanNode(node) {
   return res;
 }
 
-// 主执行器
-async function main(proxies) {
+async function fetchTemplate() {
+  const urls = [
+    "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json",
+    "https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json"
+  ];
+  for (const u of urls) {
+    try {
+      const resp = await $http.get({ url: u, headers: { "User-Agent": "Sub-Store" } });
+      if (resp && resp.body) {
+        return JSON.parse(resp.body);
+      }
+    } catch (e) {}
+  }
+  throw new Error("拉取远程 template-acl.json 失败，请检查网络或模板链接！");
+}
+
+async function produce(proxies) {
   const args = typeof $arguments !== "undefined" ? $arguments : {};
   let rawList = [];
 
-  // 1. 获取输入节点
+  // 1. 获取源节点
   if (Array.isArray(proxies) && proxies.length > 0) {
     rawList = proxies;
   } else if (proxies && Array.isArray(proxies.proxies) && proxies.proxies.length > 0) {
     rawList = proxies.proxies;
   }
 
-  // 2. 文件管理页上下文补救
+  // 跨上下文拉取 (Files 页面)
   if (rawList.length === 0) {
     const targetName = args.name || "singbox";
     const isSub = (args.type === "单订阅" || args.type === "订阅");
-    
+    const subType = isSub ? "sub" : "collection";
+
     if (typeof getProxies === "function") {
       try {
-        rawList = await getProxies({ name: targetName, type: isSub ? "sub" : "collection" });
+        rawList = await getProxies({ name: targetName, type: subType });
       } catch (e) {}
     }
     if ((!rawList || rawList.length === 0) && typeof $substore !== "undefined") {
@@ -81,15 +97,15 @@ async function main(proxies) {
   }
 
   if (!rawList || rawList.length === 0) {
-    throw new Error(`[未获取到节点] 请检查参数 #name=${args.name || "singbox"} 是否与组合订阅名称完全吻合！`);
+    throw new Error(`[未获取到节点] Sub-Store 未能拉取到【${args.name || "未指定"}】的节点，请检查组合订阅是否为空！`);
   }
 
-  // 3. 转化为标准 Sing-box 节点
+  // 2. 编译为 Sing-box 出站节点
   let singboxNodes = [];
   try {
     if (typeof ProxyUtils !== "undefined" && typeof ProxyUtils.produce === "function") {
-      const produced = ProxyUtils.produce(rawList, "Sing-Box");
-      singboxNodes = Array.isArray(produced) ? produced : (produced.outbounds || []);
+      const res = ProxyUtils.produce(rawList, "Sing-Box");
+      singboxNodes = Array.isArray(res) ? res : (res.outbounds || []);
     }
   } catch (e) {}
 
@@ -97,15 +113,10 @@ async function main(proxies) {
     singboxNodes = rawList.map(p => cleanNode(p._node || p.node || p));
   }
 
-  // 4. 读取模板文件
-  const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json";
-  const resp = await $http.get({
-    url: TEMPLATE_URL,
-    headers: { "User-Agent": "Sub-Store" }
-  });
-  const config = JSON.parse(resp.body);
+  // 3. 拉取模板
+  const config = await fetchTemplate();
 
-  // 5. 格式化并去重
+  // 4. 清洗并保证 Tag 唯一
   const validNodes = [];
   const validTags = [];
   const seen = {};
@@ -127,7 +138,7 @@ async function main(proxies) {
     validTags.push(uniqueTag);
   }
 
-  // 6. 分组匹配与 IPv6 提取
+  // 5. 分组匹配
   const rules = parseOutboundArgs(args.outbound);
   const matchedGroups = {};
   for (const r of rules) {
@@ -147,7 +158,7 @@ async function main(proxies) {
     }
   }
 
-  // 7. 注入到模板策略组中
+  // 6. 重组 outbounds
   const baseOutbounds = [];
   const groupOutbounds = [];
 
@@ -175,17 +186,9 @@ async function main(proxies) {
     }
   }
 
-  // 关键：把实体节点直接追加到 outbounds
+  // 节点实体排在最后，策略组排在前面
   config.outbounds = [...baseOutbounds, ...groupOutbounds, ...validNodes];
 
+  // 7. 终极兼容返回：无论 Sub-Store 需要对象还是字符串，一并处理
   return JSON.stringify(config, null, 2);
-}
-
-// 兼容 Sub-Store 两种沙盒触发形态
-async function produce(proxies) {
-  return await main(proxies);
-}
-
-if (typeof $arguments !== "undefined" && typeof proxies === "undefined") {
-  main().then(res => $done({ content: res })).catch(err =>$done({ error: err.message }));
 }

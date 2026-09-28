@@ -32,7 +32,7 @@
       {
         "tag": "fakeip",
         "type": "fakeip",
-        "inet4_range": "198.19.0.0/16",
+        "inet4_range": "198.18.0.0/15",
         "inet6_range": "fc00::/18"
       }
     ],
@@ -49,11 +49,11 @@
         "action": "reject"
       },
       {
-        "clash_mode": "直接连接",
+        "clash_mode": "Direct",
         "server": "local"
       },
       {
-        "clash_mode": "全局代理",
+        "clash_mode": "Global",
         "server": "fakeip"
       },
       {
@@ -132,7 +132,7 @@
         "rewrite_ttl": 1
       }
     ],
-    "final": "google",
+    "final": "local",
     "strategy": "prefer_ipv4",
     "cache_capacity": 8192,
     "optimistic": {
@@ -154,27 +154,18 @@
         "http_proxy": {
           "enabled": true,
           "server": "127.0.0.1",
-          "server_port": 7890
+          "server_port": 2080
         }
       }
     },
     {
       "tag": "mixed-in",
       "type": "mixed",
-      "listen": "127.0.0.1",
-      "listen_port": 7890
+      "listen": "0.0.0.0",
+      "listen_port": 2080
     }
   ],
   "outbounds": [
-    {
-      "tag": "全局代理",
-      "type": "selector",
-      "outbounds": [
-        "♻️ 自动选择"
-      ],
-      "default": "♻️ 自动选择",
-      "interrupt_exist_connections": true
-    },
     {
       "tag": "🚀 节点选择",
       "type": "selector",
@@ -312,7 +303,7 @@
       "tag": "📺 哔哩哔哩",
       "type": "selector",
       "outbounds": [
-        "🎯 全球直连",
+        "DIRECT",
         "🇨🇳 台湾节点",
         "🇭🇰 香港节点"
       ]
@@ -343,31 +334,6 @@
         "🇨🇳 台湾节点",
         "🇸🇬 狮城节点",
         "🇯🇵 日本节点",
-        "🇰🇷 韩国节点",
-        "🚀 手动切换"
-      ]
-    },
-    {
-      "tag": "🎯 全球直连",
-      "type": "selector",
-      "outbounds": [
-        "DIRECT",
-        "🚀 节点选择",
-        "♻️ 自动选择"
-      ]
-    },
-    {
-      "tag": "🐟 漏网之鱼",
-      "type": "selector",
-      "outbounds": [
-        "🚀 节点选择",
-        "♻️ 自动选择",
-        "DIRECT",
-        "🇭🇰 香港节点",
-        "🇨🇳 台湾节点",
-        "🇸🇬 狮城节点",
-        "🇯🇵 日本节点",
-        "🇺🇲 美国节点",
         "🇰🇷 韩国节点",
         "🚀 手动切换"
       ]
@@ -526,12 +492,12 @@
         "outbound": "DIRECT"
       },
       {
-        "clash_mode": "直接连接",
+        "clash_mode": "Direct",
         "outbound": "DIRECT"
       },
       {
-        "clash_mode": "全局代理",
-        "outbound": "全局代理"
+        "clash_mode": "Global",
+        "outbound": "🚀 节点选择"
       },
       {
         "rule_set": "geosite-private",
@@ -611,11 +577,11 @@
       },
       {
         "rule_set": "geosite-cn",
-        "outbound": "🎯 全球直连"
+        "outbound": "DIRECT"
       },
       {
         "rule_set": "geoip-cn",
-        "outbound": "🎯 全球直连"
+        "outbound": "DIRECT"
       }
     ],
     "rule_set": [
@@ -679,7 +645,7 @@
         "update_interval": "24h"
       }
     ],
-    "final": "🐟 漏网之鱼",
+    "final": "🚀 节点选择",
     "default_http_client": "直连下载",
     "auto_detect_interface": true,
     "default_domain_resolver": {
@@ -691,7 +657,7 @@
       "enabled": true
     },
     "clash_api": {
-      "default_mode": "规则判定"
+      "default_mode": "Rule"
     }
   },
   "log": {

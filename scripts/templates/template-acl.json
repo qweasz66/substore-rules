@@ -187,6 +187,7 @@
       "tag": "🌐 IPv6 节点",
       "type": "selector",
       "outbounds": [
+        "♻️ 自动选择",
         "DIRECT"
       ]
     },
@@ -200,9 +201,7 @@
     {
       "tag": "♻️ 自动选择",
       "type": "urltest",
-      "outbounds": [
-        "DIRECT"
-      ],
+      "outbounds": [],
       "url": "https://cp.cloudflare.com/generate_204",
       "interval": "10m",
       "idle_timeout": "30m",
@@ -228,8 +227,8 @@
       "tag": "📹 油管视频",
       "type": "selector",
       "outbounds": [
-        "🌐 IPv6 节点",
         "🚀 节点选择",
+        "🌐 IPv6 节点",
         "♻️ 自动选择",
         "🇭🇰 香港节点",
         "🇨🇳 台湾节点",

@@ -1,6 +1,6 @@
 /**
- * 兼容「组合订阅」与「文件管理页 (Files/Artifacts)」的双模 Sing-box 产出脚本
  * 仓库: https://github.com/qweasz66/substore-rules
+ * 完美对齐七尺宇/xream 沙盒机制
  */
 
 const FILTER_OUT_PATTERN = /官网|剩余|流量|套餐|免费|订阅|到期时间|直连|GB|Expire|Traffic|重置日|群组|发布页|防失联/i;
@@ -45,31 +45,28 @@ function cleanNode(node) {
   return res;
 }
 
-async function produce(proxies) {
+// 主执行器
+async function main(proxies) {
   const args = typeof $arguments !== "undefined" ? $arguments : {};
   let rawList = [];
 
-  // 1. 尝试从入参获取（组合订阅直接预览走这里）
+  // 1. 获取输入节点
   if (Array.isArray(proxies) && proxies.length > 0) {
     rawList = proxies;
   } else if (proxies && Array.isArray(proxies.proxies) && proxies.proxies.length > 0) {
     rawList = proxies.proxies;
   }
 
-  // 2. 关键核心：文件管理页入参为空，必须主动向 Sub-Store 请求数据
+  // 2. 文件管理页上下文补救
   if (rawList.length === 0) {
     const targetName = args.name || "singbox";
     const isSub = (args.type === "单订阅" || args.type === "订阅");
-    const subType = isSub ? "sub" : "collection";
-
-    // 方式 A：调用官方 getProxies（最稳妥）
+    
     if (typeof getProxies === "function") {
       try {
-        rawList = await getProxies({ name: targetName, type: subType });
+        rawList = await getProxies({ name: targetName, type: isSub ? "sub" : "collection" });
       } catch (e) {}
     }
-
-    // 方式 B：调用 $substore 内置对象（Files 运行上下文）
     if ((!rawList || rawList.length === 0) && typeof $substore !== "undefined") {
       try {
         if (!isSub && $substore.getCollection) {
@@ -84,10 +81,10 @@ async function produce(proxies) {
   }
 
   if (!rawList || rawList.length === 0) {
-    throw new Error(`[文件管理生成失败] 未获取到名为【${args.name || "未指定"}】的节点！请检查 URL 参数 #name 是否与组合订阅名称完全一致。`);
+    throw new Error(`[未获取到节点] 请检查参数 #name=${args.name || "singbox"} 是否与组合订阅名称完全吻合！`);
   }
 
-  // 3. 将节点编译为 Sing-box 标准出站结构
+  // 3. 转化为标准 Sing-box 节点
   let singboxNodes = [];
   try {
     if (typeof ProxyUtils !== "undefined" && typeof ProxyUtils.produce === "function") {
@@ -100,22 +97,15 @@ async function produce(proxies) {
     singboxNodes = rawList.map(p => cleanNode(p._node || p.node || p));
   }
 
-  // 4. 拉取远程模板
+  // 4. 读取模板文件
   const TEMPLATE_URL = "https://gh-proxy.com/https://raw.githubusercontent.com/qweasz66/substore-rules/main/scripts/templates/template-acl.json";
-  let templateText = "";
-  try {
-    const resp = await $http.get({
-      url: TEMPLATE_URL,
-      headers: { "User-Agent": "Sub-Store" }
-    });
-    templateText = resp.body;
-  } catch (err) {
-    throw new Error(`[Sing-Box Produce] 获取远程模板失败: ${err.message || err}`);
-  }
+  const resp = await $http.get({
+    url: TEMPLATE_URL,
+    headers: { "User-Agent": "Sub-Store" }
+  });
+  const config = JSON.parse(resp.body);
 
-  const config = JSON.parse(templateText);
-
-  // 5. 清洗节点并打上唯一 Tag
+  // 5. 格式化并去重
   const validNodes = [];
   const validTags = [];
   const seen = {};
@@ -124,9 +114,7 @@ async function produce(proxies) {
     if (!item) continue;
     let baseTag = (item.tag || item.name || "Proxy").trim();
 
-    if (FILTER_OUT_PATTERN.test(baseTag)) {
-      continue;
-    }
+    if (FILTER_OUT_PATTERN.test(baseTag)) continue;
 
     let count = seen[baseTag] || 0;
     seen[baseTag] = count + 1;
@@ -139,7 +127,7 @@ async function produce(proxies) {
     validTags.push(uniqueTag);
   }
 
-  // 6. 正则分类与 IPv6
+  // 6. 分组匹配与 IPv6 提取
   const rules = parseOutboundArgs(args.outbound);
   const matchedGroups = {};
   for (const r of rules) {
@@ -153,14 +141,13 @@ async function produce(proxies) {
         matchedGroups[r.tag].push(node.tag);
       }
     }
-
     const srv = node.server || node.host || "";
     if (IPV6_PATTERN.test(node.tag) || isIPv6Server(srv)) {
       ipv6Tags.push(node.tag);
     }
   }
 
-  // 7. 组装出站列表
+  // 7. 注入到模板策略组中
   const baseOutbounds = [];
   const groupOutbounds = [];
 
@@ -174,11 +161,10 @@ async function produce(proxies) {
 
   for (const g of groupOutbounds) {
     const tagName = g.tag || "";
-
     if (matchedGroups[tagName] && matchedGroups[tagName].length > 0) {
       g.outbounds = matchedGroups[tagName];
     } else if (tagName === "🌐 IPv6 节点") {
-      g.outbounds = ipv6Tags.length > 0 ? ipv6Tags : ["♻️ 自动选择", "DIRECT"];
+      g.outbounds = ipv6Tags.length > 0 ? ipv6Tags : ["DIRECT"];
     } else if (tagName === "♻️ 自动选择" || g.type === "urltest") {
       g.outbounds = validTags.length > 0 ? validTags : ["DIRECT"];
     } else if (["🚀 手动切换", "全局代理"].includes(tagName)) {
@@ -189,8 +175,17 @@ async function produce(proxies) {
     }
   }
 
-  // 物理注入：把节点全部排在策略组后面
+  // 关键：把实体节点直接追加到 outbounds
   config.outbounds = [...baseOutbounds, ...groupOutbounds, ...validNodes];
 
   return JSON.stringify(config, null, 2);
+}
+
+// 兼容 Sub-Store 两种沙盒触发形态
+async function produce(proxies) {
+  return await main(proxies);
+}
+
+if (typeof $arguments !== "undefined" && typeof proxies === "undefined") {
+  main().then(res => $done({ content: res })).catch(err =>$done({ error: err.message }));
 }
